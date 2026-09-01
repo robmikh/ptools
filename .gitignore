@@ -1,0 +1,5 @@
+/target
+/temp
+*.png
+*.jxr
+*.rmraw
