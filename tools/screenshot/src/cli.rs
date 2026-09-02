@@ -6,6 +6,10 @@ use windows::Win32::Foundation::HWND;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 pub struct Args {
+    /// Emit machine-readable JSON
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[clap(subcommand)]
     pub command: Commands,
 }

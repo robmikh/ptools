@@ -3,6 +3,7 @@ mod cli;
 mod d3d;
 mod display_info;
 mod handle;
+mod output;
 mod wic;
 mod window_info;
 
@@ -38,6 +39,10 @@ use windows::core::{HSTRING, IInspectable, Interface, PCWSTR, PWSTR, Result};
 
 use capture::enumerate_capturable_windows;
 use display_info::enumerate_displays;
+use output::{
+    CaptureOutput, DisplayOutput, DisplaysOutput, OutputFormat, PositionOutput, ResolutionOutput,
+    WindowOutput, WindowsOutput, render_output,
+};
 use std::path::Path;
 use std::sync::mpsc::channel;
 use window_info::WindowInfo;
@@ -54,19 +59,20 @@ fn create_capture_item_for_monitor(monitor_handle: HMONITOR) -> Result<GraphicsC
     unsafe { interop.CreateForMonitor(monitor_handle) }
 }
 
-fn main() -> Result<()> {
+fn main() -> output::Result<()> {
     unsafe {
         RoInitialize(RO_INIT_MULTITHREADED)?;
     }
 
     let args = Args::parse_args();
+    let output_format = OutputFormat::from_json(args.json);
     let (item, output) = match args.command {
         cli::Commands::EnumWindows { title } => {
-            show_window_query(&title);
+            show_window_query(&title, output_format)?;
             std::process::exit(0);
         }
         cli::Commands::EnumDisplays => {
-            show_displays()?;
+            show_displays(output_format)?;
             std::process::exit(0);
         }
         cli::Commands::CaptureWindow {
@@ -150,11 +156,20 @@ fn main() -> Result<()> {
     let wic_factory = create_wic_factory()?;
 
     let texture = take_screenshot(&item, pixel_format, &d3d_device, &d3d_context)?;
-    save_texture(
+    let (width, height) = save_texture(
         &d3d_context,
         &texture,
         &wic_factory,
         output.to_str().unwrap(),
+    )?;
+    let format = output
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap()
+        .to_string();
+    render_output(
+        output_format,
+        &CaptureOutput::new(output.display().to_string(), width, height, format),
     )?;
 
     Ok(())
@@ -271,7 +286,7 @@ fn save_texture(
     texture: &ID3D11Texture2D,
     wic_factory: &IWICImagingFactory,
     path: &str,
-) -> Result<()> {
+) -> Result<(u32, u32)> {
     let (width, height, container_format, pixel_format) = unsafe {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         texture.GetDesc(&mut desc as *mut _);
@@ -325,61 +340,59 @@ fn save_texture(
         encoder.Commit()?;
     }
 
-    Ok(())
+    Ok((width, height))
 }
 
-fn show_window_query(query: &str) {
+fn show_window_query(query: &str, output_format: OutputFormat) -> output::Result<()> {
     let windows = find_window(query);
-    if windows.is_empty() {
-        println!("No window matching '{}' found!", query);
-        std::process::exit(1);
-    } else {
-        println!("{} windows found matching '{}':", windows.len(), query);
-
-        println!("  HWND                  PID         Process Name                  Window Title");
-        for window in &windows {
+    let no_matches = windows.is_empty();
+    let windows = windows
+        .iter()
+        .map(|window| {
             let mut pid = 0;
             unsafe { GetWindowThreadProcessId(window.handle, Some(&mut pid)) };
-            let process_name = get_process_name(pid).unwrap_or("<Unknown>".to_string());
-            println!(
-                "  {:<20}  {:>6}      {:<25}     {}",
-                window.handle.0 as isize, pid, process_name, window.title
-            );
-        }
-    }
-}
-
-fn show_displays() -> Result<()> {
-    let displays = enumerate_displays()?;
-    println!("{} displays found:", displays.len());
-    println!(
-        "  ID  HMONITOR              Primary  Resolution    Position          Refresh  HDR      Device          Display Name"
-    );
-    for (index, display) in displays.iter().enumerate() {
-        let width = display.rect.right - display.rect.left;
-        let height = display.rect.bottom - display.rect.top;
-        let resolution = format!("{}x{}", width, height);
-        let position = format!("({}, {})", display.rect.left, display.rect.top);
-        let primary = if display.is_primary { "Yes" } else { "No" };
-        let hdr = match display.hdr_enabled {
-            Some(true) => "Yes",
-            Some(false) => "No",
-            None => "Unknown",
-        };
-        println!(
-            "  {:>2}  {:<20}  {:<7}  {:<12}  {:<16}  {:>3} Hz  {:<7}  {:<14}  {}",
-            index + 1,
-            display.handle.0 as isize,
-            primary,
-            resolution,
-            position,
-            display.frequency,
-            hdr,
-            display.device_name,
-            display.display_name
-        );
+            WindowOutput {
+                hwnd: (window.handle.0 as isize).to_string(),
+                pid,
+                process_name: get_process_name(pid).ok(),
+                title: window.title.clone(),
+            }
+        })
+        .collect();
+    render_output(
+        output_format,
+        &WindowsOutput::new(query.to_string(), windows),
+    )?;
+    if no_matches {
+        std::process::exit(1);
     }
     Ok(())
+}
+
+fn show_displays(output_format: OutputFormat) -> output::Result<()> {
+    let displays = enumerate_displays()?;
+    let displays = displays
+        .into_iter()
+        .enumerate()
+        .map(|(index, display)| DisplayOutput {
+            id: index + 1,
+            hmonitor: (display.handle.0 as isize).to_string(),
+            primary: display.is_primary,
+            resolution: ResolutionOutput {
+                width: display.rect.right - display.rect.left,
+                height: display.rect.bottom - display.rect.top,
+            },
+            position: PositionOutput {
+                x: display.rect.left,
+                y: display.rect.top,
+            },
+            refresh_hz: display.frequency,
+            hdr_enabled: display.hdr_enabled,
+            device_name: display.device_name,
+            display_name: display.display_name,
+        })
+        .collect();
+    render_output(output_format, &DisplaysOutput::new(displays))
 }
 
 fn find_window(window_name: &str) -> Vec<WindowInfo> {
