@@ -168,6 +168,7 @@ fn main() -> output::Result<()> {
         eprintln!("Invalid file extension! Expecting 'png' or 'jxr'.");
         std::process::exit(1);
     };
+    create_output_parent(&output)?;
 
     // Initialize D3D11
     let d3d_device = d3d::create_d3d_device()?;
@@ -538,6 +539,16 @@ fn validate_path<P: AsRef<Path>>(path: P) -> Option<DirectXPixelFormat> {
     pixel_format
 }
 
+fn create_output_parent(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +572,20 @@ mod tests {
             receive_frame(&receiver, Duration::ZERO),
             Err(ScreenshotError::ChannelDisconnected)
         ));
+    }
+
+    #[test]
+    fn creates_output_parent_directories() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("screenshot-output-{unique}"));
+        let parent = root.join("nested").join("directory");
+
+        create_output_parent(&parent.join("capture.png")).unwrap();
+
+        assert!(parent.is_dir());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
