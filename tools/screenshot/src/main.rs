@@ -332,14 +332,14 @@ fn show_window_query(query: &str) {
     } else {
         println!("{} windows found matching '{}':", windows.len(), query);
 
-        println!("  PID         Process Name                  Window Title");
+        println!("  HWND                  PID         Process Name                  Window Title");
         for window in &windows {
             let mut pid = 0;
             unsafe { GetWindowThreadProcessId(window.handle, Some(&mut pid)) };
             let process_name = get_process_name(pid).unwrap_or("<Unknown>".to_string());
             println!(
-                "  {:>6}      {:<25}     {}",
-                pid, process_name, window.title
+                "  {:<20}  {:>6}      {:<25}     {}",
+                window.handle.0 as isize, pid, process_name, window.title
             );
         }
     }
