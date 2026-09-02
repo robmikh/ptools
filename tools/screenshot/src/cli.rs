@@ -32,10 +32,10 @@ pub enum Commands {
     },
     /// Capture a display
     CaptureDisplay {
-        /// Exact title match
+        /// Capture a monitor by number (starts at 1)
         #[arg(short, long, conflicts_with = "primary")]
         monitor: Option<usize>,
-        /// Window handle
+        /// Capture the primary monitor
         #[arg(short, long, conflicts_with = "monitor")]
         primary: bool,
         /// Output file
