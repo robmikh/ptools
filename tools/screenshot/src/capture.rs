@@ -6,14 +6,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, GetAncestor, GetShellWindow, GetWindowLongW,
     IsWindowVisible, WS_DISABLED, WS_EX_TOOLWINDOW,
 };
-use windows::core::BOOL;
+use windows::core::{BOOL, Result};
 
 struct WindowEnumerationState {
     windows: Vec<WindowInfo>,
     console_window: Option<HWND>,
 }
 
-pub fn enumerate_capturable_windows() -> Vec<WindowInfo> {
+pub fn enumerate_capturable_windows() -> Result<Vec<WindowInfo>> {
     unsafe {
         // TODO: This works for Command Prompt but not Terminal
         let console_window = {
@@ -24,19 +24,21 @@ pub fn enumerate_capturable_windows() -> Vec<WindowInfo> {
                 Some(window_handle)
             }
         };
-        let state = Box::into_raw(Box::new(WindowEnumerationState {
+        let mut state = WindowEnumerationState {
             windows: Vec::new(),
             console_window,
-        }));
-        EnumWindows(Some(enum_window), LPARAM(state as isize)).unwrap();
-        let state = Box::from_raw(state);
-        state.windows
+        };
+        EnumWindows(
+            Some(enum_window),
+            LPARAM(&mut state as *mut WindowEnumerationState as isize),
+        )?;
+        Ok(state.windows)
     }
 }
 
 extern "system" fn enum_window(window: HWND, state: LPARAM) -> BOOL {
     unsafe {
-        let state = Box::leak(Box::from_raw(state.0 as *mut WindowEnumerationState));
+        let state = &mut *(state.0 as *mut WindowEnumerationState);
 
         if let Some(console_window) = &state.console_window {
             if window == *console_window {

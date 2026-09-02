@@ -25,7 +25,6 @@ use windows::Win32::Graphics::Imaging::{
     GUID_ContainerFormatPng, GUID_ContainerFormatWmp, GUID_WICPixelFormat32bppBGRA,
     GUID_WICPixelFormat64bppRGBAHalf, IWICImagingFactory, WICBitmapEncoderNoCache,
 };
-use windows::Win32::Storage::FileSystem::GetFullPathNameW;
 use windows::Win32::System::Com::{STGM_CREATE, STGM_READWRITE};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -35,7 +34,7 @@ use windows::Win32::System::WinRT::{
 };
 use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
 use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetWindowThreadProcessId};
-use windows::core::{HSTRING, IInspectable, Interface, PCWSTR, PWSTR, Result};
+use windows::core::{HSTRING, IInspectable, Interface, PWSTR, Result};
 
 use capture::enumerate_capturable_windows;
 use display_info::enumerate_displays;
@@ -103,19 +102,20 @@ fn main() -> output::Result<()> {
         }) => {
             let item: GraphicsCaptureItem = if let Some(title) = title {
                 // Find an exact title match.
-                let windows = find_exact_window(&title);
-                if windows.is_empty() {
-                    eprintln!("No window matched title!");
-                    std::process::exit(1);
-                } else if windows.len() > 1 {
-                    eprintln!(
-                        "More than one window ({}) matched the given title! Use the `enum-windows` subcommand to find the desired window handle instead.",
-                        windows.len()
-                    );
-                    std::process::exit(1);
-                } else {
-                    let handle = windows[0].handle;
-                    create_capture_item_for_window(handle)?
+                let windows = find_exact_window(&title)?;
+                match windows.as_slice() {
+                    [] => {
+                        eprintln!("No window matched title!");
+                        std::process::exit(1);
+                    }
+                    [window] => create_capture_item_for_window(window.handle)?,
+                    _ => {
+                        eprintln!(
+                            "More than one window ({}) matched the given title! Use the `enum-windows` subcommand to find the desired window handle instead.",
+                            windows.len()
+                        );
+                        std::process::exit(1);
+                    }
                 }
             } else if let Some(handle) = handle {
                 create_capture_item_for_window(handle.0)?
@@ -140,11 +140,13 @@ fn main() -> output::Result<()> {
                     std::process::exit(1);
                 }
                 let index = monitor - 1;
-                if index >= displays.len() {
-                    eprintln!("Invalid input, id is higher than the number of displays!");
+                let Some(display) = displays.get(index) else {
+                    eprintln!(
+                        "Invalid monitor ID {monitor}. Available monitor IDs are 1 through {}.",
+                        displays.len()
+                    );
                     std::process::exit(1);
-                }
-                let display = &displays[index];
+                };
                 create_capture_item_for_monitor(display.handle)?
             } else if primary {
                 let monitor_handle =
@@ -162,8 +164,8 @@ fn main() -> output::Result<()> {
     };
 
     // Validate path and derive pixel format
-    let pixel_format = if let Some(pixel_format) = validate_path(&output) {
-        pixel_format
+    let (pixel_format, format) = if let Some(format) = validate_path(&output) {
+        format
     } else {
         eprintln!("Invalid file extension! Expecting 'png' or 'jxr'.");
         std::process::exit(1);
@@ -200,16 +202,21 @@ fn main() -> output::Result<()> {
         &d3d_context,
         &texture,
         &wic_factory,
-        output.to_str().unwrap(),
+        output.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "The output path is not valid Unicode.",
+            )
+        })?,
     )?;
-    let format = output
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap()
-        .to_string();
     render_output(
         output_format,
-        &CaptureOutput::new(output.display().to_string(), width, height, format),
+        &CaptureOutput::new(
+            output.display().to_string(),
+            width,
+            height,
+            format.to_string(),
+        ),
     )?;
 
     Ok(())
@@ -259,7 +266,12 @@ fn take_screenshot(
         let copy_texture = {
             let mut texture = None;
             d3d_device.CreateTexture2D(&desc, None, Some(&mut texture))?;
-            texture.unwrap()
+            texture.ok_or_else(|| {
+                windows::core::Error::new(
+                    E_UNEXPECTED,
+                    "CreateTexture2D succeeded without returning a texture.",
+                )
+            })?
         };
 
         d3d_context.CopyResource(Some(&copy_texture.cast()?), Some(&source_texture.cast()?));
@@ -302,6 +314,21 @@ fn get_bytes_from_texture(
                 ));
             }
         };
+        let row_bytes = desc.Width.checked_mul(bytes_per_pixel).ok_or_else(|| {
+            windows::core::Error::new(
+                E_INVALIDARG,
+                "The captured texture row size exceeds the supported range.",
+            )
+        })?;
+        let output_len = row_bytes
+            .checked_mul(desc.Height)
+            .map(|length| length as usize)
+            .ok_or_else(|| {
+                windows::core::Error::new(
+                    E_INVALIDARG,
+                    "The captured texture size exceeds the supported range.",
+                )
+            })?;
 
         let resource: ID3D11Resource = texture.cast()?;
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
@@ -312,21 +339,44 @@ fn get_bytes_from_texture(
             0,
             Some(&mut mapped),
         )?;
+        if mapped.pData.is_null() {
+            d3d_context.Unmap(Some(&resource), 0);
+            return Err(windows::core::Error::new(
+                E_UNEXPECTED,
+                "The mapped capture texture did not provide pixel data.",
+            ));
+        }
+        if mapped.RowPitch < row_bytes {
+            d3d_context.Unmap(Some(&resource), 0);
+            return Err(windows::core::Error::new(
+                E_UNEXPECTED,
+                format!(
+                    "The mapped texture row pitch ({}) is smaller than the required row size ({}).",
+                    mapped.RowPitch, row_bytes
+                ),
+            ));
+        }
+        let mapped_len = mapped
+            .RowPitch
+            .checked_mul(desc.Height)
+            .map(|length| length as usize)
+            .ok_or_else(|| {
+                d3d_context.Unmap(Some(&resource), 0);
+                windows::core::Error::new(
+                    E_INVALIDARG,
+                    "The mapped capture texture size exceeds the supported range.",
+                )
+            })?;
 
         // Get a slice of bytes
-        let slice: &[u8] = {
-            std::slice::from_raw_parts(
-                mapped.pData as *const _,
-                (desc.Height * mapped.RowPitch) as usize,
-            )
-        };
+        let slice: &[u8] = std::slice::from_raw_parts(mapped.pData as *const _, mapped_len);
 
-        let mut bytes = vec![0u8; (desc.Width * desc.Height * bytes_per_pixel) as usize];
+        let mut bytes = vec![0u8; output_len];
         for row in 0..desc.Height {
-            let data_begin = (row * (desc.Width * bytes_per_pixel)) as usize;
-            let data_end = ((row + 1) * (desc.Width * bytes_per_pixel)) as usize;
+            let data_begin = (row * row_bytes) as usize;
+            let data_end = data_begin + row_bytes as usize;
             let slice_begin = (row * mapped.RowPitch) as usize;
-            let slice_end = slice_begin + (desc.Width * bytes_per_pixel) as usize;
+            let slice_end = slice_begin + row_bytes as usize;
             bytes[data_begin..data_end].copy_from_slice(&slice[slice_begin..slice_end]);
         }
 
@@ -374,7 +424,19 @@ fn save_texture(
             let mut frame = None;
             let mut props = None;
             encoder.CreateNewFrame(&mut frame, &mut props)?;
-            (frame.unwrap(), props.unwrap())
+            let frame = frame.ok_or_else(|| {
+                windows::core::Error::new(
+                    E_UNEXPECTED,
+                    "CreateNewFrame succeeded without returning a frame.",
+                )
+            })?;
+            let props = props.ok_or_else(|| {
+                windows::core::Error::new(
+                    E_UNEXPECTED,
+                    "CreateNewFrame succeeded without returning an encoder property bag.",
+                )
+            })?;
+            (frame, props)
         };
 
         frame.Initialize(&props)?;
@@ -400,8 +462,8 @@ fn save_texture(
 
 fn show_window_query(query: Option<&str>, output_format: OutputFormat) -> output::Result<()> {
     let windows = match query {
-        Some(query) => find_window(query),
-        None => enumerate_capturable_windows(),
+        Some(query) => find_window(query)?,
+        None => enumerate_capturable_windows()?,
     };
     let no_matches = windows.is_empty();
     let windows = windows
@@ -458,8 +520,8 @@ fn show_displays(output_format: OutputFormat) -> output::Result<()> {
     render_output(output_format, &DisplaysOutput::new(displays))
 }
 
-fn find_window(window_name: &str) -> Vec<WindowInfo> {
-    let window_list = enumerate_capturable_windows();
+fn find_window(window_name: &str) -> Result<Vec<WindowInfo>> {
+    let window_list = enumerate_capturable_windows()?;
     let mut windows: Vec<WindowInfo> = Vec::new();
     for window_info in window_list.into_iter() {
         let title = window_info.title.to_lowercase();
@@ -467,18 +529,18 @@ fn find_window(window_name: &str) -> Vec<WindowInfo> {
             windows.push(window_info.clone());
         }
     }
-    windows
+    Ok(windows)
 }
 
-fn find_exact_window(window_name: &str) -> Vec<WindowInfo> {
-    let window_list = enumerate_capturable_windows();
+fn find_exact_window(window_name: &str) -> Result<Vec<WindowInfo>> {
+    let window_list = enumerate_capturable_windows()?;
     let mut windows: Vec<WindowInfo> = Vec::new();
     for window_info in window_list.into_iter() {
         if window_info.title == window_name {
             windows.push(window_info.clone());
         }
     }
-    windows
+    Ok(windows)
 }
 
 fn get_process_name(pid: u32) -> Result<String> {
@@ -496,42 +558,30 @@ fn get_process_name(pid: u32) -> Result<String> {
             &mut len,
         )?;
 
-        buffer.resize(len as usize + 1, 0);
+        buffer.resize(len as usize, 0);
         buffer
     };
-    let file_name = unsafe {
-        let mut buffer = vec![0u16; path_buffer.len()];
-        let mut file_part: usize = 0;
-        let len = GetFullPathNameW(
-            PCWSTR(path_buffer.as_ptr()),
-            Some(&mut buffer),
-            Some(&mut file_part as *mut _ as *mut _),
-        );
-
-        buffer.resize(len as usize, 0);
-
-        let index = if file_part != 0 {
-            (file_part - buffer.as_ptr() as usize) / std::mem::size_of::<u16>()
-        } else {
-            0
-        };
-        let slice = &buffer[index..];
-        match String::from_utf16(slice) {
-            Ok(string) => string,
-            Err(error) => return Err(error.into()),
-        }
-    };
-    Ok(file_name)
+    let file_name_start = path_buffer
+        .iter()
+        .rposition(|character| *character == b'\\' as u16 || *character == b'/' as u16)
+        .map_or(0, |index| index + 1);
+    if file_name_start == path_buffer.len() {
+        return Err(windows::core::Error::new(
+            E_UNEXPECTED,
+            "The process image path did not contain a file name.",
+        ));
+    }
+    Ok(String::from_utf16(&path_buffer[file_name_start..])?)
 }
 
-fn validate_path<P: AsRef<Path>>(path: P) -> Option<DirectXPixelFormat> {
+fn validate_path<P: AsRef<Path>>(path: P) -> Option<(DirectXPixelFormat, &'static str)> {
     let path = path.as_ref();
     let mut pixel_format = None;
     if let Some(extension) = path.extension() {
         if let Some(extension) = extension.to_str() {
             match extension {
-                "png" => pixel_format = Some(DirectXPixelFormat::B8G8R8A8UIntNormalized),
-                "jxr" => pixel_format = Some(DirectXPixelFormat::R16G16B16A16Float),
+                "png" => pixel_format = Some((DirectXPixelFormat::B8G8R8A8UIntNormalized, "png")),
+                "jxr" => pixel_format = Some((DirectXPixelFormat::R16G16B16A16Float, "jxr")),
                 _ => {}
             }
         }

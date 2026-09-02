@@ -93,7 +93,7 @@ fn get_all_display_handles() -> Result<Vec<HMONITOR>> {
 
 extern "system" fn enum_monitor(monitor: HMONITOR, _: HDC, _: *mut RECT, state: LPARAM) -> BOOL {
     unsafe {
-        let handles = (state.0 as *mut Vec<HMONITOR>).as_mut().unwrap();
+        let handles = &mut *(state.0 as *mut Vec<HMONITOR>);
         handles.push(monitor);
     }
     true.into()

@@ -1,5 +1,5 @@
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
-use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Foundation::{E_UNEXPECTED, HMODULE};
 use windows::Win32::Graphics::{
     Direct3D::{D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP},
     Direct3D11::{
@@ -50,7 +50,12 @@ pub fn create_d3d_device() -> Result<ID3D11Device> {
         }
     }
     result?;
-    Ok(device.unwrap())
+    device.ok_or_else(|| {
+        windows::core::Error::new(
+            E_UNEXPECTED,
+            "D3D11CreateDevice succeeded without returning a device.",
+        )
+    })
 }
 
 pub fn create_direct3d_device(d3d_device: &ID3D11Device) -> Result<IDirect3DDevice> {
