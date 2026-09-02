@@ -20,7 +20,7 @@ pub enum Commands {
     EnumWindows {
         /// Title search string
         #[arg(short, long)]
-        title: String,
+        title: Option<String>,
     },
     /// Enumerate displays
     EnumDisplays,

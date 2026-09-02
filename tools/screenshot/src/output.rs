@@ -46,12 +46,12 @@ where
 #[derive(Serialize)]
 pub struct WindowsOutput {
     schema_version: u32,
-    query: String,
+    query: Option<String>,
     pub windows: Vec<WindowOutput>,
 }
 
 impl WindowsOutput {
-    pub fn new(query: String, windows: Vec<WindowOutput>) -> Self {
+    pub fn new(query: Option<String>, windows: Vec<WindowOutput>) -> Self {
         Self {
             schema_version: 1,
             query,
@@ -71,16 +71,24 @@ pub struct WindowOutput {
 impl TableOutput for WindowsOutput {
     fn write_table(&self, writer: &mut dyn Write) -> io::Result<()> {
         if self.windows.is_empty() {
-            writeln!(writer, "No window matching '{}' found!", self.query)?;
+            if let Some(query) = &self.query {
+                writeln!(writer, "No window matching '{}' found!", query)?;
+            } else {
+                writeln!(writer, "No windows found!")?;
+            }
             return Ok(());
         }
 
-        writeln!(
-            writer,
-            "{} windows found matching '{}':",
-            self.windows.len(),
-            self.query
-        )?;
+        if let Some(query) = &self.query {
+            writeln!(
+                writer,
+                "{} windows found matching '{}':",
+                self.windows.len(),
+                query
+            )?;
+        } else {
+            writeln!(writer, "{} windows found:", self.windows.len())?;
+        }
         writeln!(
             writer,
             "  HWND                  PID         Process Name                  Window Title"
@@ -213,7 +221,7 @@ mod tests {
     #[test]
     fn windows_output_serializes_handles_as_strings() {
         let output = WindowsOutput::new(
-            "terminal".to_string(),
+            Some("terminal".to_string()),
             vec![WindowOutput {
                 hwnd: "9007199254740993".to_string(),
                 pid: 42,

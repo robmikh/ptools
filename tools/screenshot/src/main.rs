@@ -68,7 +68,7 @@ fn main() -> output::Result<()> {
     let output_format = OutputFormat::from_json(args.json);
     let (item, output) = match args.command {
         cli::Commands::EnumWindows { title } => {
-            show_window_query(&title, output_format)?;
+            show_window_query(title.as_deref(), output_format)?;
             std::process::exit(0);
         }
         cli::Commands::EnumDisplays => {
@@ -343,8 +343,11 @@ fn save_texture(
     Ok((width, height))
 }
 
-fn show_window_query(query: &str, output_format: OutputFormat) -> output::Result<()> {
-    let windows = find_window(query);
+fn show_window_query(query: Option<&str>, output_format: OutputFormat) -> output::Result<()> {
+    let windows = match query {
+        Some(query) => find_window(query),
+        None => enumerate_capturable_windows(),
+    };
     let no_matches = windows.is_empty();
     let windows = windows
         .iter()
@@ -361,7 +364,7 @@ fn show_window_query(query: &str, output_format: OutputFormat) -> output::Result
         .collect();
     render_output(
         output_format,
-        &WindowsOutput::new(query.to_string(), windows),
+        &WindowsOutput::new(query.map(str::to_string), windows),
     )?;
     if no_matches {
         std::process::exit(1);
