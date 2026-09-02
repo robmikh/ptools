@@ -2,15 +2,18 @@ mod capture;
 mod cli;
 mod d3d;
 mod display_info;
+mod handle;
 mod wic;
 mod window_info;
 
-use cli::{Args, CaptureMode};
+use cli::Args;
 use wic::create_wic_factory;
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HWND};
+use windows::Win32::Foundation::{
+    E_FAIL, E_INVALIDARG, E_UNEXPECTED, ERROR_INSUFFICIENT_BUFFER, HWND,
+};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_STAGING, ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
@@ -23,20 +26,27 @@ use windows::Win32::Graphics::Imaging::{
     GUID_ContainerFormatPng, GUID_ContainerFormatWmp, GUID_WICPixelFormat32bppBGRA,
     GUID_WICPixelFormat64bppRGBAHalf, IWICImagingFactory, WICBitmapEncoderNoCache,
 };
+use windows::Win32::Storage::FileSystem::GetFullPathNameW;
 use windows::Win32::System::Com::{STGM_CREATE, STGM_READWRITE};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_VM_READ, QueryFullProcessImageNameW,
+};
 use windows::Win32::System::WinRT::{
     Graphics::Capture::IGraphicsCaptureItemInterop, RO_INIT_MULTITHREADED, RoInitialize,
 };
 use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
 use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetWindowThreadProcessId};
-use windows::core::{HSTRING, IInspectable, Interface, Result};
+use windows::core::{HRESULT, HSTRING, IInspectable, Interface, PCWSTR, PWSTR, Result};
 
 use capture::enumerate_capturable_windows;
 use display_info::enumerate_displays;
-use std::io::Write;
 use std::path::Path;
 use std::sync::mpsc::channel;
 use window_info::WindowInfo;
+
+use crate::handle::AutoHandle;
+use crate::window_info::truncate_to_first_null_char;
 
 fn create_capture_item_for_window(window_handle: HWND) -> Result<GraphicsCaptureItem> {
     let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
@@ -54,40 +64,82 @@ fn main() -> Result<()> {
     }
 
     let args = Args::parse_args();
-    let mode = args.capture_mode();
+    let (item, output) = match args.command {
+        cli::Commands::EnumWindows { title } => {
+            show_window_query(&title);
+            std::process::exit(0);
+        }
+        cli::Commands::CaptureWindow {
+            title,
+            handle,
+            output,
+        } => {
+            let item: GraphicsCaptureItem = if let Some(title) = title {
+                // Find an exact title match.
+                let windows = find_exact_window(&title);
+                if windows.is_empty() {
+                    println!("No window matched title!");
+                    std::process::exit(1);
+                } else if windows.len() > 1 {
+                    println!(
+                        "More than one window ({}) matched the given title! Use the `enum-windows` subcommand to find the desired window handle instead.",
+                        windows.len()
+                    );
+                    std::process::exit(1);
+                } else {
+                    let handle = windows[0].handle;
+                    create_capture_item_for_window(handle)?
+                }
+            } else if let Some(handle) = handle {
+                create_capture_item_for_window(handle.0)?
+            } else {
+                println!(
+                    "Must specify either an exact title (--title) or a window handle (--handle)!"
+                );
+                std::process::exit(1);
+            };
+
+            (item, output)
+        }
+        cli::Commands::CaptureDisplay {
+            monitor,
+            primary,
+            output,
+        } => {
+            let item: GraphicsCaptureItem = if let Some(monitor) = monitor {
+                let displays = enumerate_displays()?;
+                if monitor == 0 {
+                    println!("Invalid input, ids start with 1.");
+                    std::process::exit(1);
+                }
+                let index = monitor - 1;
+                if index >= displays.len() {
+                    println!("Invalid input, id is higher than the number of displays!");
+                    std::process::exit(1);
+                }
+                let display = &displays[index];
+                create_capture_item_for_monitor(display.handle)?
+            } else if primary {
+                let monitor_handle =
+                    unsafe { MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY) };
+                create_capture_item_for_monitor(monitor_handle)?
+            } else {
+                println!(
+                    "Must specify either a monitor number (--monitor) or the primary (--primary)!"
+                );
+                std::process::exit(1);
+            };
+
+            (item, output)
+        }
+    };
 
     // Validate path and derive pixel format
-    let pixel_format = if let Some(pixel_format) = validate_path(&args.output_file) {
+    let pixel_format = if let Some(pixel_format) = validate_path(&output) {
         pixel_format
     } else {
         println!("Invalid file extension! Expecting 'png' or 'jxr'.");
         std::process::exit(1);
-    };
-
-    let item = match mode {
-        CaptureMode::Window(query) => {
-            let window = get_window_from_query(&query)?;
-            create_capture_item_for_window(window.handle)?
-        }
-        CaptureMode::Monitor(id) => {
-            let displays = enumerate_displays()?;
-            if id == 0 {
-                println!("Invalid input, ids start with 1.");
-                std::process::exit(1);
-            }
-            let index = id - 1;
-            if index >= displays.len() {
-                println!("Invalid input, id is higher than the number of displays!");
-                std::process::exit(1);
-            }
-            let display = &displays[index];
-            create_capture_item_for_monitor(display.handle)?
-        }
-        CaptureMode::Primary => {
-            let monitor_handle =
-                unsafe { MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY) };
-            create_capture_item_for_monitor(monitor_handle)?
-        }
     };
 
     // Initialize D3D11
@@ -98,7 +150,12 @@ fn main() -> Result<()> {
     let wic_factory = create_wic_factory()?;
 
     let texture = take_screenshot(&item, pixel_format, &d3d_device, &d3d_context)?;
-    save_texture(&d3d_context, &texture, &wic_factory, &args.output_file)?;
+    save_texture(
+        &d3d_context,
+        &texture,
+        &wic_factory,
+        output.to_str().unwrap(),
+    )?;
 
     Ok(())
 }
@@ -271,57 +328,25 @@ fn save_texture(
     Ok(())
 }
 
-fn get_window_from_query(query: &str) -> Result<WindowInfo> {
+fn show_window_query(query: &str) {
     let windows = find_window(query);
-    let window = if windows.is_empty() {
+    if windows.is_empty() {
         println!("No window matching '{}' found!", query);
         std::process::exit(1);
-    } else if windows.len() == 1 {
-        &windows[0]
     } else {
-        println!(
-            "{} windows found matching '{}', please select one:",
-            windows.len(),
-            query
-        );
-        println!("    Num       PID    Window Title");
-        for (i, window) in windows.iter().enumerate() {
+        println!("{} windows found matching '{}':", windows.len(), query);
+
+        println!("  PID         Process Name                  Window Title");
+        for window in &windows {
             let mut pid = 0;
             unsafe { GetWindowThreadProcessId(window.handle, Some(&mut pid)) };
-            println!("    {:>3}    {:>6}    {}", i, pid, window.title);
+            let process_name = get_process_name(pid).unwrap_or("<Unknown>".to_string());
+            println!(
+                "  {:>6}      {:<25}     {}",
+                pid, process_name, window.title
+            );
         }
-        let index: usize;
-        loop {
-            print!("Please make a selection (q to quit): ");
-            std::io::stdout().flush().unwrap();
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).unwrap();
-            if input.to_lowercase().contains('q') {
-                std::process::exit(0);
-            }
-            let input = input.trim();
-            let selection: Option<usize> = match input.parse::<usize>() {
-                Ok(selection) => {
-                    if selection < windows.len() {
-                        Some(selection)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
-            if let Some(selection) = selection {
-                index = selection;
-                break;
-            } else {
-                println!("Invalid input, '{}'!", input);
-                continue;
-            };
-        }
-        &windows[index]
-    };
-
-    Ok(window.clone())
+    }
 }
 
 fn find_window(window_name: &str) -> Vec<WindowInfo> {
@@ -334,6 +359,60 @@ fn find_window(window_name: &str) -> Vec<WindowInfo> {
         }
     }
     windows
+}
+
+fn find_exact_window(window_name: &str) -> Vec<WindowInfo> {
+    let window_list = enumerate_capturable_windows();
+    let mut windows: Vec<WindowInfo> = Vec::new();
+    for window_info in window_list.into_iter() {
+        if window_info.title == window_name {
+            windows.push(window_info.clone());
+        }
+    }
+    windows
+}
+
+fn get_process_name(pid: u32) -> Result<String> {
+    let handle = unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)?;
+        AutoHandle(handle)
+    };
+    let path_buffer = unsafe {
+        let mut buffer = vec![0u16; 2048];
+        let mut len = buffer.len() as u32;
+        QueryFullProcessImageNameW(
+            handle.0,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        )?;
+
+        buffer.resize(len as usize + 1, 0);
+        buffer
+    };
+    let file_name = unsafe {
+        let mut buffer = vec![0u16; path_buffer.len()];
+        let mut file_part: usize = 0;
+        let len = GetFullPathNameW(
+            PCWSTR(path_buffer.as_ptr()),
+            Some(&mut buffer),
+            Some(&mut file_part as *mut _ as *mut _),
+        );
+
+        buffer.resize(len as usize, 0);
+
+        let index = if file_part != 0 {
+            (file_part - buffer.as_ptr() as usize) / std::mem::size_of::<u16>()
+        } else {
+            0
+        };
+        let slice = &buffer[index..];
+        match String::from_utf16(slice) {
+            Ok(string) => string,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    Ok(file_name)
 }
 
 fn validate_path<P: AsRef<Path>>(path: P) -> Option<DirectXPixelFormat> {

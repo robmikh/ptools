@@ -35,7 +35,7 @@ impl WindowInfo {
     }
 }
 
-fn truncate_to_first_null_char(input: &mut String) {
+pub fn truncate_to_first_null_char(input: &mut String) {
     if let Some(index) = input.find('\0') {
         input.truncate(index);
     }
