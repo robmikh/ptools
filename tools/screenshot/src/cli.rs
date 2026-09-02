@@ -18,6 +18,8 @@ pub enum Commands {
         #[arg(short, long)]
         title: String,
     },
+    /// Enumerate displays
+    EnumDisplays,
     /// Capture a window
     CaptureWindow {
         /// Exact title match

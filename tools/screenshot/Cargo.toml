@@ -12,6 +12,7 @@ clap = { version = "4.6.6", features = ["derive"] }
 version = "0.61.1"
 features = [
     "Foundation",
+    "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Console",

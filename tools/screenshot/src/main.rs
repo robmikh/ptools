@@ -65,6 +65,10 @@ fn main() -> Result<()> {
             show_window_query(&title);
             std::process::exit(0);
         }
+        cli::Commands::EnumDisplays => {
+            show_displays()?;
+            std::process::exit(0);
+        }
         cli::Commands::CaptureWindow {
             title,
             handle,
@@ -343,6 +347,39 @@ fn show_window_query(query: &str) {
             );
         }
     }
+}
+
+fn show_displays() -> Result<()> {
+    let displays = enumerate_displays()?;
+    println!("{} displays found:", displays.len());
+    println!(
+        "  ID  HMONITOR              Primary  Resolution    Position          Refresh  HDR      Device          Display Name"
+    );
+    for (index, display) in displays.iter().enumerate() {
+        let width = display.rect.right - display.rect.left;
+        let height = display.rect.bottom - display.rect.top;
+        let resolution = format!("{}x{}", width, height);
+        let position = format!("({}, {})", display.rect.left, display.rect.top);
+        let primary = if display.is_primary { "Yes" } else { "No" };
+        let hdr = match display.hdr_enabled {
+            Some(true) => "Yes",
+            Some(false) => "No",
+            None => "Unknown",
+        };
+        println!(
+            "  {:>2}  {:<20}  {:<7}  {:<12}  {:<16}  {:>3} Hz  {:<7}  {:<14}  {}",
+            index + 1,
+            display.handle.0 as isize,
+            primary,
+            resolution,
+            position,
+            display.frequency,
+            hdr,
+            display.device_name,
+            display.display_name
+        );
+    }
+    Ok(())
 }
 
 fn find_window(window_name: &str) -> Vec<WindowInfo> {
