@@ -84,10 +84,10 @@ fn main() -> output::Result<()> {
                 // Find an exact title match.
                 let windows = find_exact_window(&title);
                 if windows.is_empty() {
-                    println!("No window matched title!");
+                    eprintln!("No window matched title!");
                     std::process::exit(1);
                 } else if windows.len() > 1 {
-                    println!(
+                    eprintln!(
                         "More than one window ({}) matched the given title! Use the `enum-windows` subcommand to find the desired window handle instead.",
                         windows.len()
                     );
@@ -99,7 +99,7 @@ fn main() -> output::Result<()> {
             } else if let Some(handle) = handle {
                 create_capture_item_for_window(handle.0)?
             } else {
-                println!(
+                eprintln!(
                     "Must specify either an exact title (--title) or a window handle (--handle)!"
                 );
                 std::process::exit(1);
@@ -115,12 +115,12 @@ fn main() -> output::Result<()> {
             let item: GraphicsCaptureItem = if let Some(monitor) = monitor {
                 let displays = enumerate_displays()?;
                 if monitor == 0 {
-                    println!("Invalid input, ids start with 1.");
+                    eprintln!("Invalid input, ids start with 1.");
                     std::process::exit(1);
                 }
                 let index = monitor - 1;
                 if index >= displays.len() {
-                    println!("Invalid input, id is higher than the number of displays!");
+                    eprintln!("Invalid input, id is higher than the number of displays!");
                     std::process::exit(1);
                 }
                 let display = &displays[index];
@@ -130,7 +130,7 @@ fn main() -> output::Result<()> {
                     unsafe { MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY) };
                 create_capture_item_for_monitor(monitor_handle)?
             } else {
-                println!(
+                eprintln!(
                     "Must specify either a monitor number (--monitor) or the primary (--primary)!"
                 );
                 std::process::exit(1);
@@ -144,7 +144,7 @@ fn main() -> output::Result<()> {
     let pixel_format = if let Some(pixel_format) = validate_path(&output) {
         pixel_format
     } else {
-        println!("Invalid file extension! Expecting 'png' or 'jxr'.");
+        eprintln!("Invalid file extension! Expecting 'png' or 'jxr'.");
         std::process::exit(1);
     };
 
@@ -367,6 +367,11 @@ fn show_window_query(query: Option<&str>, output_format: OutputFormat) -> output
         &WindowsOutput::new(query.map(str::to_string), windows),
     )?;
     if no_matches {
+        if let Some(query) = query {
+            eprintln!("No window matching '{}' found!", query);
+        } else {
+            eprintln!("No windows found!");
+        }
         std::process::exit(1);
     }
     Ok(())

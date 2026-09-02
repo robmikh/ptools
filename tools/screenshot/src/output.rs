@@ -71,11 +71,6 @@ pub struct WindowOutput {
 impl TableOutput for WindowsOutput {
     fn write_table(&self, writer: &mut dyn Write) -> io::Result<()> {
         if self.windows.is_empty() {
-            if let Some(query) = &self.query {
-                writeln!(writer, "No window matching '{}' found!", query)?;
-            } else {
-                writeln!(writer, "No windows found!")?;
-            }
             return Ok(());
         }
 
