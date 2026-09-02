@@ -1,6 +1,6 @@
 use std::{ffi::c_void, fmt::Display, path::PathBuf, str::FromStr};
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use windows::Win32::Foundation::HWND;
 
 #[derive(Parser, Debug)]
@@ -25,29 +25,51 @@ pub enum Commands {
     /// Enumerate displays
     EnumDisplays,
     /// Capture a window
-    CaptureWindow {
-        /// Exact title match
-        #[arg(short, long, conflicts_with = "handle")]
-        title: Option<String>,
-        /// Window handle
-        #[arg(long, conflicts_with = "title")]
-        handle: Option<WindowHandle>,
-        /// Output file
-        #[arg(short, long)]
-        output: PathBuf,
-    },
+    CaptureWindow(CaptureWindowArgs),
     /// Capture a display
-    CaptureDisplay {
-        /// Capture a monitor by number (starts at 1)
-        #[arg(short, long, conflicts_with = "primary")]
-        monitor: Option<usize>,
-        /// Capture the primary monitor
-        #[arg(short, long, conflicts_with = "monitor")]
-        primary: bool,
-        /// Output file
-        #[arg(short, long)]
-        output: PathBuf,
-    },
+    CaptureDisplay(CaptureDisplayArgs),
+}
+
+#[derive(clap::Args, Clone, Debug)]
+#[command(group(
+    ArgGroup::new("window_selector")
+        .required(true)
+        .multiple(false)
+        .args(["title", "handle"])
+))]
+pub struct CaptureWindowArgs {
+    /// Exact title match
+    #[arg(short, long)]
+    pub title: Option<String>,
+
+    /// Window handle
+    #[arg(long)]
+    pub handle: Option<WindowHandle>,
+
+    /// Output file
+    #[arg(short, long)]
+    pub output: PathBuf,
+}
+
+#[derive(clap::Args, Clone, Debug)]
+#[command(group(
+    ArgGroup::new("display_selector")
+        .required(true)
+        .multiple(false)
+        .args(["monitor", "primary"])
+))]
+pub struct CaptureDisplayArgs {
+    /// Capture a monitor by number (starts at 1)
+    #[arg(short, long)]
+    pub monitor: Option<usize>,
+
+    /// Capture the primary monitor
+    #[arg(short, long)]
+    pub primary: bool,
+
+    /// Output file
+    #[arg(short, long)]
+    pub output: PathBuf,
 }
 
 #[repr(transparent)]

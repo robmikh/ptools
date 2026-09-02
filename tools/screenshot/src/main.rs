@@ -96,11 +96,11 @@ fn main() -> output::Result<()> {
             show_displays(output_format)?;
             std::process::exit(0);
         }
-        cli::Commands::CaptureWindow {
+        cli::Commands::CaptureWindow(cli::CaptureWindowArgs {
             title,
             handle,
             output,
-        } => {
+        }) => {
             let item: GraphicsCaptureItem = if let Some(title) = title {
                 // Find an exact title match.
                 let windows = find_exact_window(&title);
@@ -128,11 +128,11 @@ fn main() -> output::Result<()> {
 
             (item, output, CaptureTargetKind::Window)
         }
-        cli::Commands::CaptureDisplay {
+        cli::Commands::CaptureDisplay(cli::CaptureDisplayArgs {
             monitor,
             primary,
             output,
-        } => {
+        }) => {
             let item: GraphicsCaptureItem = if let Some(monitor) = monitor {
                 let displays = enumerate_displays()?;
                 if monitor == 0 {
