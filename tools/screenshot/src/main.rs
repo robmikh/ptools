@@ -577,13 +577,13 @@ fn get_process_name(pid: u32) -> Result<String> {
 fn validate_path<P: AsRef<Path>>(path: P) -> Option<(DirectXPixelFormat, &'static str)> {
     let path = path.as_ref();
     let mut pixel_format = None;
-    if let Some(extension) = path.extension() {
-        if let Some(extension) = extension.to_str() {
-            match extension {
-                "png" => pixel_format = Some((DirectXPixelFormat::B8G8R8A8UIntNormalized, "png")),
-                "jxr" => pixel_format = Some((DirectXPixelFormat::R16G16B16A16Float, "jxr")),
-                _ => {}
-            }
+    if let Some(extension) = path.extension()
+        && let Some(extension) = extension.to_str()
+    {
+        match extension {
+            "png" => pixel_format = Some((DirectXPixelFormat::B8G8R8A8UIntNormalized, "png")),
+            "jxr" => pixel_format = Some((DirectXPixelFormat::R16G16B16A16Float, "jxr")),
+            _ => {}
         }
     }
     pixel_format

@@ -40,14 +40,14 @@ pub fn create_d3d_device() -> Result<ID3D11Device> {
         D3D11_CREATE_DEVICE_BGRA_SUPPORT,
         &mut device,
     );
-    if let Err(error) = &result {
-        if error.code() == DXGI_ERROR_UNSUPPORTED {
-            result = create_d3d_device_with_type(
-                D3D_DRIVER_TYPE_WARP,
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                &mut device,
-            );
-        }
+    if let Err(error) = &result
+        && error.code() == DXGI_ERROR_UNSUPPORTED
+    {
+        result = create_d3d_device_with_type(
+            D3D_DRIVER_TYPE_WARP,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            &mut device,
+        );
     }
     result?;
     device.ok_or_else(|| {

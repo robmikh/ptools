@@ -40,10 +40,10 @@ extern "system" fn enum_window(window: HWND, state: LPARAM) -> BOOL {
     unsafe {
         let state = &mut *(state.0 as *mut WindowEnumerationState);
 
-        if let Some(console_window) = &state.console_window {
-            if window == *console_window {
-                return true.into();
-            }
+        if let Some(console_window) = &state.console_window
+            && window == *console_window
+        {
+            return true.into();
         }
 
         let window_info = WindowInfo::new(window);
