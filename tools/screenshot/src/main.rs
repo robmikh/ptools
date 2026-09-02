@@ -11,9 +11,7 @@ use wic::create_wic_factory;
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{
-    E_FAIL, E_INVALIDARG, E_UNEXPECTED, ERROR_INSUFFICIENT_BUFFER, HWND,
-};
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HWND};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_STAGING, ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
@@ -29,15 +27,14 @@ use windows::Win32::Graphics::Imaging::{
 use windows::Win32::Storage::FileSystem::GetFullPathNameW;
 use windows::Win32::System::Com::{STGM_CREATE, STGM_READWRITE};
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_VM_READ, QueryFullProcessImageNameW,
+    OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::System::WinRT::{
     Graphics::Capture::IGraphicsCaptureItemInterop, RO_INIT_MULTITHREADED, RoInitialize,
 };
 use windows::Win32::UI::Shell::SHCreateStreamOnFileEx;
 use windows::Win32::UI::WindowsAndMessaging::{GetDesktopWindow, GetWindowThreadProcessId};
-use windows::core::{HRESULT, HSTRING, IInspectable, Interface, PCWSTR, PWSTR, Result};
+use windows::core::{HSTRING, IInspectable, Interface, PCWSTR, PWSTR, Result};
 
 use capture::enumerate_capturable_windows;
 use display_info::enumerate_displays;
@@ -46,7 +43,6 @@ use std::sync::mpsc::channel;
 use window_info::WindowInfo;
 
 use crate::handle::AutoHandle;
-use crate::window_info::truncate_to_first_null_char;
 
 fn create_capture_item_for_window(window_handle: HWND) -> Result<GraphicsCaptureItem> {
     let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
