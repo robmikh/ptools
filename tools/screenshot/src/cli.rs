@@ -86,11 +86,14 @@ impl FromStr for WindowHandle {
     type Err = WindowHandleParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let pointer: isize = match s.parse() {
-            Ok(value) => value,
-            Err(error) => return Err(WindowHandleParseError(error.to_string())),
+        let pointer = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+            usize::from_str_radix(hex, 16).map(|value| value as *mut c_void)
+        } else {
+            s.parse::<isize>().map(|value| value as *mut c_void)
         };
-        Ok(WindowHandle(HWND(pointer as *mut c_void)))
+        pointer
+            .map(|pointer| WindowHandle(HWND(pointer)))
+            .map_err(|error| WindowHandleParseError(error.to_string()))
     }
 }
 
@@ -104,5 +107,32 @@ impl std::error::Error for WindowHandleParseError {}
 impl Args {
     pub fn parse_args() -> Self {
         Self::parse()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_decimal_window_handle() {
+        let handle: WindowHandle = "394708".parse().unwrap();
+
+        assert_eq!(handle.0.0 as usize, 394708);
+    }
+
+    #[test]
+    fn parses_hexadecimal_window_handle() {
+        let lowercase: WindowHandle = "0x605d4".parse().unwrap();
+        let uppercase: WindowHandle = "0X605D4".parse().unwrap();
+
+        assert_eq!(lowercase.0.0 as usize, 0x605d4);
+        assert_eq!(uppercase.0.0 as usize, 0x605d4);
+    }
+
+    #[test]
+    fn rejects_invalid_window_handle() {
+        assert!("not-a-handle".parse::<WindowHandle>().is_err());
+        assert!("0xnot-hex".parse::<WindowHandle>().is_err());
     }
 }
