@@ -12,7 +12,7 @@ use wic::create_wic_factory;
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem};
 use windows::Graphics::DirectX::DirectXPixelFormat;
-use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, HWND};
+use windows::Win32::Foundation::{E_FAIL, E_INVALIDARG, E_UNEXPECTED, HWND};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
     D3D11_USAGE_STAGING, ID3D11Device, ID3D11DeviceContext, ID3D11Resource, ID3D11Texture2D,
@@ -44,10 +44,31 @@ use output::{
     WindowOutput, WindowsOutput, render_output,
 };
 use std::path::Path;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::Duration;
 use window_info::WindowInfo;
 
 use crate::handle::AutoHandle;
+
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[derive(Clone, Copy)]
+enum CaptureTargetKind {
+    Window,
+    Display,
+}
+
+enum ScreenshotError {
+    Windows(windows::core::Error),
+    Timeout,
+    ChannelDisconnected,
+}
+
+impl From<windows::core::Error> for ScreenshotError {
+    fn from(error: windows::core::Error) -> Self {
+        Self::Windows(error)
+    }
+}
 
 fn create_capture_item_for_window(window_handle: HWND) -> Result<GraphicsCaptureItem> {
     let interop = windows::core::factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
@@ -66,7 +87,7 @@ fn main() -> output::Result<()> {
 
     let args = Args::parse_args();
     let output_format = OutputFormat::from_json(args.json);
-    let (item, output) = match args.command {
+    let (item, output, target_kind) = match args.command {
         cli::Commands::EnumWindows { title } => {
             show_window_query(title.as_deref(), output_format)?;
             std::process::exit(0);
@@ -105,7 +126,7 @@ fn main() -> output::Result<()> {
                 std::process::exit(1);
             };
 
-            (item, output)
+            (item, output, CaptureTargetKind::Window)
         }
         cli::Commands::CaptureDisplay {
             monitor,
@@ -136,7 +157,7 @@ fn main() -> output::Result<()> {
                 std::process::exit(1);
             };
 
-            (item, output)
+            (item, output, CaptureTargetKind::Display)
         }
     };
 
@@ -155,7 +176,25 @@ fn main() -> output::Result<()> {
     // Initialize WIC
     let wic_factory = create_wic_factory()?;
 
-    let texture = take_screenshot(&item, pixel_format, &d3d_device, &d3d_context)?;
+    let texture = match take_screenshot(&item, pixel_format, &d3d_device, &d3d_context) {
+        Ok(texture) => texture,
+        Err(ScreenshotError::Windows(error)) => return Err(error.into()),
+        Err(ScreenshotError::Timeout) => {
+            match target_kind {
+                CaptureTargetKind::Window => eprintln!(
+                    "Timed out waiting for a frame after 3 seconds. The window may be minimized; restore it and try again."
+                ),
+                CaptureTargetKind::Display => {
+                    eprintln!("Timed out waiting for a frame after 3 seconds.")
+                }
+            }
+            std::process::exit(1);
+        }
+        Err(ScreenshotError::ChannelDisconnected) => {
+            eprintln!("Capture stopped before a frame was received.");
+            std::process::exit(1);
+        }
+    };
     let (width, height) = save_texture(
         &d3d_context,
         &texture,
@@ -180,7 +219,7 @@ fn take_screenshot(
     pixel_format: DirectXPixelFormat,
     d3d_device: &ID3D11Device,
     d3d_context: &ID3D11DeviceContext,
-) -> Result<ID3D11Texture2D> {
+) -> std::result::Result<ID3D11Texture2D, ScreenshotError> {
     let item_size = item.Size()?;
 
     let device = d3d::create_direct3d_device(d3d_device)?;
@@ -192,9 +231,13 @@ fn take_screenshot(
     frame_pool.FrameArrived(
         &TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new({
             move |frame_pool, _| {
-                let frame_pool = frame_pool.as_ref().unwrap();
+                let frame_pool = frame_pool.as_ref().ok_or_else(|| {
+                    windows::core::Error::new(E_UNEXPECTED, "Capture frame pool was unavailable.")
+                })?;
                 let frame = frame_pool.TryGetNextFrame()?;
-                sender.send(frame).unwrap();
+                sender.send(frame).map_err(|_| {
+                    windows::core::Error::new(E_UNEXPECTED, "Capture frame receiver disconnected.")
+                })?;
                 Ok(())
             }
         }),
@@ -202,7 +245,7 @@ fn take_screenshot(
     session.StartCapture()?;
 
     let texture = unsafe {
-        let frame = receiver.recv().unwrap();
+        let frame = receive_frame(&receiver, CAPTURE_TIMEOUT)?;
 
         let source_texture: ID3D11Texture2D =
             d3d::get_d3d_interface_from_object(&frame.Surface()?)?;
@@ -227,6 +270,17 @@ fn take_screenshot(
     };
 
     Ok(texture)
+}
+
+fn receive_frame<T>(
+    receiver: &Receiver<T>,
+    timeout: Duration,
+) -> std::result::Result<T, ScreenshotError> {
+    match receiver.recv_timeout(timeout) {
+        Ok(frame) => Ok(frame),
+        Err(RecvTimeoutError::Timeout) => Err(ScreenshotError::Timeout),
+        Err(RecvTimeoutError::Disconnected) => Err(ScreenshotError::ChannelDisconnected),
+    }
 }
 
 fn get_bytes_from_texture(
@@ -482,4 +536,30 @@ fn validate_path<P: AsRef<Path>>(path: P) -> Option<DirectXPixelFormat> {
         }
     }
     pixel_format
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receive_frame_reports_timeout() {
+        let (_sender, receiver) = channel::<()>();
+
+        assert!(matches!(
+            receive_frame(&receiver, Duration::ZERO),
+            Err(ScreenshotError::Timeout)
+        ));
+    }
+
+    #[test]
+    fn receive_frame_reports_disconnected_channel() {
+        let (sender, receiver) = channel::<()>();
+        drop(sender);
+
+        assert!(matches!(
+            receive_frame(&receiver, Duration::ZERO),
+            Err(ScreenshotError::ChannelDisconnected)
+        ));
+    }
 }
