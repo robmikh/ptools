@@ -24,7 +24,7 @@ pub enum Commands {
         #[arg(short, long, conflicts_with = "handle")]
         title: Option<String>,
         /// Window handle
-        #[arg(short, long, conflicts_with = "window")]
+        #[arg(long, conflicts_with = "title")]
         handle: Option<WindowHandle>,
         /// Output file
         #[arg(short, long)]
